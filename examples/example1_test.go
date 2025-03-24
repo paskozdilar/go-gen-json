@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/paskozdilar/json-parser-generator/examples"
+	"github.com/paskozdilar/go-gen-json/examples"
 )
 
 func TestExample1(t *testing.T) {

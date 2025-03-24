@@ -1,13 +1,15 @@
-package examples
+package examples_test
 
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/paskozdilar/go-gen-json/examples"
 )
 
 func TestExample2(t *testing.T) {
-	e1 := &Example2{}
-	e2 := &Example2{}
+	e1 := &examples.Example2{}
+	e2 := &examples.Example2{}
 	in := []byte(`{"foo":"hello","bar":{"baz":[1,2,3],"qux":{"quux":3.14}}}`)
 
 	if err := json.Unmarshal(in, e1); err != nil {
@@ -42,7 +44,7 @@ func TestExample2(t *testing.T) {
 }
 
 func BenchmarkExample2(b *testing.B) {
-	e := &Example2{}
+	e := &examples.Example2{}
 	in := []byte(`{"foo":"hello","bar":{"baz":[1,2,3],"qux":{"quux":3.14}}}`)
 
 	b.Run("json.Unmarshal", func(b *testing.B) {

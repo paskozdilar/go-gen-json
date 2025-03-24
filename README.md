@@ -49,3 +49,6 @@ functions, but will be much faster.
 - [ ] Write a generator for the struct-specific code
     - [ ] MarshalJSON
     - [ ] UnmarshalJSON
+- [ ] Write required utility functions in subpackage
+    - [ ] Create subpackage "jsonutil"
+    - [x] Write Discard function
