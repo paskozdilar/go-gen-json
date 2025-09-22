@@ -69,6 +69,8 @@ func (p *BasicStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 				return errors.New("expected bool, got " + string(t.Kind()))
 			}
 			(*p).Active = t.Kind() == 't'
+		default:
+			d.SkipValue()
 		}
 	}
 	_, _ = d.ReadToken()

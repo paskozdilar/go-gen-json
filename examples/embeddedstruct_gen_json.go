@@ -7,12 +7,12 @@ import (
 	"errors"
 )
 
-func (p *NestedStruct) UnmarshalJSON(b []byte) error {
+func (p *EmbeddedStruct) UnmarshalJSON(b []byte) error {
 	d := jsontext.NewDecoder(bytes.NewReader(b))
 	return p.UnmarshalJSONFrom(d)
 }
 
-func (p *NestedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
+func (p *EmbeddedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 	var (
 		t   jsontext.Token
 		err error
@@ -33,6 +33,42 @@ func (p *NestedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 			return errors.New("expected string, got " + string(t.Kind()))
 		}
 		switch t.String() {
+		case "name":
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			} 
+			if t.Kind() != '"' {
+				return errors.New("expected string, got " + string(t.Kind()))
+			}
+			((*p).BasicStruct).Name = string(t.String())
+		case "age":
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			}
+			if t.Kind() != '0' {
+				return errors.New("expected number, got " + string(t.Kind()))
+			}
+			((*p).BasicStruct).Age = int(t.Int())
+		case "email":
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			} 
+			if t.Kind() != '"' {
+				return errors.New("expected string, got " + string(t.Kind()))
+			}
+			((*p).BasicStruct).Email = string(t.String())
+		case "active":
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			}
+			if t.Kind() != 't' && t.Kind() != 'f' {
+				return errors.New("expected bool, got " + string(t.Kind()))
+			}
+			((*p).BasicStruct).Active = t.Kind() == 't'
 		case "id":
 			t, err = d.ReadToken()
 			if err != nil {
@@ -41,7 +77,7 @@ func (p *NestedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 			if t.Kind() != '0' {
 				return errors.New("expected number, got " + string(t.Kind()))
 			}
-			(*p).ID = int(t.Int())
+			((*p).NestedStruct).ID = int(t.Int())
 		case "profile":
 			t, err = d.ReadToken()
 			if err != nil {
@@ -50,7 +86,7 @@ func (p *NestedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 			if t.Kind() != '[' {
 				return errors.New("expected array start, got " + string(t.Kind()))
 			}
-			(*p).Profile = nil
+			((*p).NestedStruct).Profile = nil
 			for d.PeekKind() != ']' {
 				var elem BasicStruct
 				t, err = d.ReadToken()
@@ -110,7 +146,7 @@ func (p *NestedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 					}
 				}
 				_, _ = d.ReadToken()
-				(*p).Profile = append((*p).Profile, elem)
+				((*p).NestedStruct).Profile = append(((*p).NestedStruct).Profile, elem)
 			}
 			_, _ = d.ReadToken()
 		case "tags":
@@ -121,7 +157,7 @@ func (p *NestedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 			if t.Kind() != '[' {
 				return errors.New("expected array start, got " + string(t.Kind()))
 			}
-			(*p).Tags = nil
+			((*p).NestedStruct).Tags = nil
 			for d.PeekKind() != ']' {
 				var elem string
 				t, err = d.ReadToken()
@@ -132,9 +168,18 @@ func (p *NestedStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 					return errors.New("expected string, got " + string(t.Kind()))
 				}
 				elem = string(t.String())
-				(*p).Tags = append((*p).Tags, elem)
+				((*p).NestedStruct).Tags = append(((*p).NestedStruct).Tags, elem)
 			}
 			_, _ = d.ReadToken()
+		case "extra_field":
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			} 
+			if t.Kind() != '"' {
+				return errors.New("expected string, got " + string(t.Kind()))
+			}
+			(*p).ExtraField = string(t.String())
 		default:
 			d.SkipValue()
 		}

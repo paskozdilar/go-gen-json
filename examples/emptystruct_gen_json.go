@@ -33,6 +33,8 @@ func (p *EmptyStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 			return errors.New("expected string, got " + string(t.Kind()))
 		}
 		switch t.String() {
+		default:
+			d.SkipValue()
 		}
 	}
 	_, _ = d.ReadToken()

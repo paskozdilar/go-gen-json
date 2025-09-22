@@ -2,21 +2,16 @@
 package examples
 
 import (
-	"encoding/json"
+	"fmt"
 	"time"
 )
-
-func mustMarshal[T any](v T) []byte {
-	b, _ := json.Marshal(v)
-	return b
-}
 
 //go:generate go run .. -type=NamedString
 type NamedString string
 
 var (
-	NamedStringValue = "foo"
-	NamedStringJSON  = mustMarshal(NamedStringValue)
+	NamedStringValue = NamedString("foo")
+	NamedStringJSON  = []byte(`"foo"`)
 )
 
 //go:generate go run .. -type=EmptyStruct
@@ -24,7 +19,7 @@ type EmptyStruct struct{}
 
 var (
 	EmptyStructValue = EmptyStruct{}
-	EmptyStructJSON  = mustMarshal(EmptyStructValue)
+	EmptyStructJSON  = []byte(`{}`)
 )
 
 //go:generate go run .. -type=BasicStruct
@@ -42,7 +37,14 @@ var (
 		Email:  "foo@bar.baz",
 		Active: false,
 	}
-	BasicStructJSON = mustMarshal(BasicStructValue)
+	BasicStructJSON = canonicalize([]byte(`
+		{
+			"name": "foo",
+			"age": 42,
+			"email": "foo@bar.baz",
+			"active": false
+		}
+	`))
 )
 
 //go:generate go run .. -type=NestedStruct
@@ -54,11 +56,26 @@ type NestedStruct struct {
 
 var (
 	NestedStructValue = NestedStruct{
-		ID:      1234,
-		Profile: []BasicStruct{BasicStructValue},
-		Tags:    []string{"foo", "bar", "baz"},
+		ID: 1234,
+		Profile: []BasicStruct{
+			BasicStructValue,
+		},
+		Tags: []string{"foo", "bar", "baz"},
 	}
-	NestedStructJSON = mustMarshal(NestedStructValue)
+	NestedStructJSON = canonicalize(fmt.Appendf(nil, `
+		{
+			"id": 1234,
+			"profile": [
+				%s
+			],
+			"tags": [
+				"foo",
+				"bar",
+				"baz"
+			]
+		}`,
+		BasicStructJSON,
+	))
 )
 
 //go:generate go run .. -type=ComplexStruct
@@ -74,14 +91,10 @@ var (
 	ComplexStructValue = ComplexStruct{
 		ID: 1234,
 		Data: map[string]any{
-			"temperature": struct {
-				Celsius    float32
-				Fahrenheit float32
-				Kelvin     float32
-			}{
-				Celsius:    37.0,
-				Fahrenheit: 98.6,
-				Kelvin:     310.15,
+			"temperature": map[string]any{
+				"Celsius":    37.0,
+				"Fahrenheit": 98.6,
+				"Kelvin":     310.15,
 			},
 			"humidity": 31.4,
 			"notes":    "this data is completely made up",
@@ -99,13 +112,54 @@ var (
 		Metadata:  &BasicStructValue,
 		CreatedAt: time.Date(2025, 9, 21, 17, 0, 0, 0, time.Local),
 	}
-	ComplexStructJSON = mustMarshal(ComplexStructValue)
+	ComplexStructJSON = canonicalize(fmt.Appendf(nil, `
+		{
+		    "id": 1234,
+		    "data": {
+		        "humidity": 31.4,
+		        "notes": "this data is completely made up",
+		        "temperature": {
+		            "Celsius": 37,
+		            "Fahrenheit": 98.6,
+		            "Kelvin": 310.15
+		        }
+		    },
+		    "numbers": [
+		        3.1415926535,
+		        2.7182818284,
+		        1.4142135623,
+		        1.6180339887,
+		        602214076000000000000000,
+		        2.220446049250313e-16,
+		        0.1,
+		        0
+		    ],
+		    "metadata": %s,
+		    "created_at": "2025-09-21T17:00:00+02:00"
+		}`,
+		BasicStructJSON,
+	))
 )
 
+//go:generate go run .. -type=EmbeddedStruct
 type EmbeddedStruct struct {
-	BasicStruct
+	BasicStruct `json:",inline"`
+	NestedStruct
 	ExtraField string `json:"extra_field"`
 }
+
+var (
+	EmbeddedStructValue = EmbeddedStruct{
+		BasicStruct: BasicStructValue,
+		ExtraField:  "extra",
+	}
+	EmbeddedStructJSON = canonicalize(join([]byte(`
+		{
+			"extra_field": "extra"
+		}`),
+		BasicStructJSON,
+	))
+)
 
 type TaggedStruct struct {
 	PublicField     string `json:"public_field"`

@@ -94,7 +94,9 @@ func (p *ComplexStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 			}
 			_, _ = d.ReadToken()
 		case "metadata":
-			(*p).Metadata = new(BasicStruct)
+			if (*p).Metadata == nil {
+				(*p).Metadata = new(BasicStruct)
+			}
 			t, err = d.ReadToken()
 			if err != nil {
 				return err
@@ -147,6 +149,8 @@ func (p *ComplexStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 						return errors.New("expected bool, got " + string(t.Kind()))
 					}
 					((*(*p).Metadata)).Active = t.Kind() == 't'
+				default:
+					d.SkipValue()
 				}
 			}
 			_, _ = d.ReadToken()
@@ -158,6 +162,8 @@ func (p *ComplexStruct) UnmarshalJSONFrom(d *jsontext.Decoder) error {
 			if err = (*p).CreatedAt.UnmarshalText([]byte(t.String())); err != nil {
 				return err
 			}
+		default:
+			d.SkipValue()
 		}
 	}
 	_, _ = d.ReadToken()

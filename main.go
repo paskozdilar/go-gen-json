@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 var debug bool
@@ -352,44 +353,86 @@ func (g *generator) unmarshalerStruct(typeName string, ts *ast.StructType, varEx
 	`)
 	g.indent()
 	for _, field := range ts.Fields.List {
-		if len(field.Names) == 0 {
-			continue // Skip embedded fields
-		}
-		var jsonTag string
-		if field.Tag != nil {
-			tag, err := strconv.Unquote(field.Tag.Value)
-			if err != nil {
-				log.Fatalf("parse json tag: %v", err)
-			}
-			parts := strings.Split(tag, " ")
-			idx := slices.IndexFunc(parts, func(part string) bool {
-				return strings.HasPrefix(part, "json:")
-			})
-			if idx != -1 {
-				tags, err := strconv.Unquote(strings.TrimPrefix(parts[idx], "json:"))
-				if err != nil {
-					log.Fatalf("parse json tag: %v", err)
-				}
-				jsonTag = strings.Split(tags, ",")[0]
-			}
-		}
-		for _, name := range field.Names {
-			if jsonTag == "" {
-				jsonTag = name.Name
-			}
-			typeString := exprToString(field.Type)
-			g.writeLine(fmt.Sprintf(`case "%s":`, jsonTag))
-			g.indent()
-			g.unmarshaler(typeString, field.Type, fmt.Sprintf("(%s).%s", varExpr, name.Name), typeString)
-			g.unindent()
-		}
+		g.unmarshalerField(field, varExpr)
 	}
 	g.unindent()
 	g.writeMultiline(`
+			default:
+				d.SkipValue()
 			}
 		}
 		_, _ = d.ReadToken()
 	`)
+}
+
+func (g *generator) unmarshalerField(field *ast.Field, varExpr string) {
+	var jsonTag string
+	var jsonOpts []string
+	if field.Tag != nil {
+		tag, err := strconv.Unquote(field.Tag.Value)
+		if err != nil {
+			log.Fatalf("parse json tag: %v", err)
+		}
+		parts := strings.Split(tag, " ")
+		idx := slices.IndexFunc(parts, func(part string) bool {
+			return strings.HasPrefix(part, "json:")
+		})
+		if idx != -1 {
+			sTags, err := strconv.Unquote(strings.TrimPrefix(parts[idx], "json:"))
+			if err != nil {
+				log.Fatalf("parse json tag: %v", err)
+			}
+			tags := strings.Split(sTags, ",")
+			jsonTag = tags[0]
+			if jsonTag == "-" {
+				// Skip this field
+				return
+			}
+			if len(tags) > 1 {
+				jsonOpts = strings.Split(sTags, ",")[1:]
+			}
+		}
+	}
+	isEmbedded := len(field.Names) == 0
+	isInline := slices.Contains(jsonOpts, "inline")
+	if isEmbedded || isInline {
+		// Embedded or inline: recurse if struct
+		switch ts := field.Type.(type) {
+		case *ast.Ident:
+			if unicode.IsLower(rune(ts.Name[0])) {
+				// Skip unexported embedded field
+				return
+			}
+			typeSpec, ok := g.types[ts.Name]
+			if !ok {
+				log.Fatalf("go-gen-json does not support external embedded types: %s", ts.Name)
+			}
+			st, ok := typeSpec.Type.(*ast.StructType)
+			if !ok {
+				log.Fatalf("go-gen-json only supports embedded struct types: %s", ts.Name)
+			}
+			for _, f := range st.Fields.List {
+				g.unmarshalerField(f, fmt.Sprintf("(%s).%s", varExpr, ts.Name))
+			}
+		// TODO:
+		// case *ast.SelectorExpr:
+		// case *ast.StarExpr:
+		// case *ast.StructType:
+		default:
+			log.Fatalf("unsupported embedded or inline field type: %T", field.Type)
+		}
+		return
+	}
+	for _, name := range field.Names {
+		if jsonTag == "" {
+			jsonTag = name.Name
+		}
+		typeString := exprToString(field.Type)
+		g.writeLine(fmt.Sprintf(`case "%s":`, jsonTag))
+		g.indent()
+		g.unmarshaler(typeString, field.Type, fmt.Sprintf("(%s).%s", varExpr, name.Name), typeString)
+		g.unindent()
+	}
 }
 
 func (g *generator) unmarshalerArray(elemType ast.Expr, varExpr string) {
@@ -465,7 +508,9 @@ func (g *generator) unmarshalerPointer(typeName string, ts *ast.StarExpr, varExp
 	// Don't read anything: just initialize varExpr pointer, then call unmarshaler on the underlying type
 	g.useImports("errors")
 	g.writeMultiline(fmt.Sprintf(`
-		%s = new(%s)
+		if %[1]s == nil {
+			%[1]s = new(%[2]s)
+		}
 	`, varExpr, exprToString(ts.X)))
 	g.unmarshaler(originalName, ts.X, fmt.Sprintf("(*%s)", varExpr), originalName)
 }

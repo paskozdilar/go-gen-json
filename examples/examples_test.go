@@ -1,55 +1,77 @@
-package examples
+package examples_test
 
 import (
+	"bytes"
 	"encoding/json/v2"
 	"log"
 	"reflect"
 	"testing"
+
+	"github.com/paskozdilar/go-gen-json/examples"
 )
 
-// TODO: modify into `testMarshal` and `testUnmarshal` akin to bench
-func run[T, W any](t *testing.T, name string, v1 T, v2 W) {
-	b1, err := json.Marshal(&v1)
-	if err != nil {
-		t.Fatalf("marshal %s error: %v", name, err)
+func testUnmarshal[T any](in []byte, out T) func(*testing.T) {
+	return func(t *testing.T) {
+		var v T
+		if _, ok := any(&v).(json.Unmarshaler); !ok {
+			t.Skipf("type %T does not implement json.Unmarshaler", &v)
+		}
+		if err := json.Unmarshal(in, &v); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if !reflect.DeepEqual(v, out) {
+			log.Fatalf(
+				"unmarshal error: differes from json/v2, got: %v, want: %v, diff: %v",
+				svaluef(v), svaluef(out), sdiff(v, out),
+			)
+		}
 	}
-	b2, err := json.Marshal(&v2)
-	if err != nil {
-		t.Fatalf("marshal %s error: %v", name, err)
+}
+
+func testMarshal[T any](v T, out []byte) func(*testing.T) {
+	return func(t *testing.T) {
+		if _, ok := any(&v).(json.Marshaler); !ok {
+			t.Skipf("type %T does not implement json.Marshaler", &v)
+		}
+		b, err := json.Marshal(&v)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		if !bytes.Equal(b, out) {
+			log.Fatalf(
+				"marshal error: differes from json/v2, got: %s, want: %s",
+				b, out,
+			)
+		}
 	}
-	if err := json.Unmarshal(b1, &v1); err != nil {
-		t.Fatalf("unmarshal %s error: %v", name, err)
-	}
-	if err := json.Unmarshal(b2, &v2); err != nil {
-		t.Fatalf("unmarshal %s error: %v", name, err)
-	}
-	var c1, c2 W
-	json.Unmarshal(b1, &c1)
-	json.Unmarshal(b2, &c2)
-	if !reflect.DeepEqual(c1, c2) {
-		log.Fatalf(
-			"marshal %s error: differes from json/v2, got: %s, want: %s",
-			name, b1, b2,
-		)
-	}
+}
+
+func TestNamedString(t *testing.T) {
+	t.Run("Unmarshal", testUnmarshal(examples.NamedStringJSON, examples.NamedStringValue))
+	t.Run("Marshal", testMarshal(examples.NamedStringValue, examples.NamedStringJSON))
 }
 
 func TestEmptyStruct(t *testing.T) {
-	type W EmptyStruct
-	run(t, "EmptyStruct", EmptyStructValue, W(EmptyStructValue))
+	t.Run("Unmarshal", testUnmarshal(examples.EmptyStructJSON, examples.EmptyStructValue))
+	t.Run("Marshal", testMarshal(examples.EmptyStructValue, examples.EmptyStructJSON))
 }
 
 func TestBasicStruct(t *testing.T) {
-	type W BasicStruct
-	run(t, "BasicStruct", BasicStructValue, W(BasicStructValue))
+	t.Run("Unmarshal", testUnmarshal(examples.BasicStructJSON, examples.BasicStructValue))
+	t.Run("Marshal", testMarshal(examples.BasicStructValue, examples.BasicStructJSON))
 }
 
 func TestNestedStruct(t *testing.T) {
-	type W NestedStruct
-	run(t, "NestedStruct", NestedStructValue, W(NestedStructValue))
+	t.Run("Unmarshal", testUnmarshal(examples.NestedStructJSON, examples.NestedStructValue))
+	t.Run("Marshal", testMarshal(examples.NestedStructValue, examples.NestedStructJSON))
 }
 
 func TestComplexStruct(t *testing.T) {
-	type W ComplexStruct
-	run(t, "ComplexStruct", ComplexStructValue, W(ComplexStructValue))
+	t.Run("Unmarshal", testUnmarshal(examples.ComplexStructJSON, examples.ComplexStructValue))
+	t.Run("Marshal", testMarshal(examples.ComplexStructValue, examples.ComplexStructJSON))
+}
+
+func TestEmbeddedStruct(t *testing.T) {
+	t.Run("Unmarshal", testUnmarshal(examples.EmbeddedStructJSON, examples.EmbeddedStructValue))
+	t.Run("Marshal", testMarshal(examples.EmbeddedStructValue, examples.EmbeddedStructJSON))
 }
