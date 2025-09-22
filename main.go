@@ -1,98 +1,478 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
-	"io/fs"
 	"log"
+	"maps"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
-	"text/template"
 )
 
+var debug bool
+
 func main() {
-	// Define the flag for the struct name
-	structName := flag.String("name", "", "Name of the struct to search for")
+	typeName := ParseArgs()
+	fileSpec, types, typeSpec := ParseType(typeName)
+	GenerateUnmarshaler(fileSpec, types, typeSpec)
+	// GenerateMarshaler(fileName, typeSpec)
+}
+
+func ParseArgs() (typeName string) {
+	flag.StringVar(&typeName, "type", "", "Type name to parse")
+	flag.BoolVar(&debug, "debug", false, "Output debug code")
 	flag.Parse()
-
-	if *structName == "" {
-		log.Fatal("Please provide a struct name using the -name flag")
+	if typeName == "" {
+		flag.Usage()
 	}
+	return typeName
+}
 
-	// Get the current directory
+// ParseType searches for type declaration in current directory
+func ParseType(typeName string) (fileSpec *ast.File, types map[string]*ast.TypeSpec, typeSpec *ast.TypeSpec) {
+	// Find Go files in the current directory
 	dir, err := os.Getwd()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("get current directory: %v", err)
 	}
-
-	// Walk through all .go files in the directory
+	files, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		log.Fatalf("find *.go files: %v", err)
+	}
+	// Parse Go files
+	fset := token.NewFileSet()
+	types = make(map[string]*ast.TypeSpec)
 	found := false
-	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	for _, file := range files {
+		node, err := parser.ParseFile(fset, file, nil, parser.AllErrors)
 		if err != nil {
-			return err
+			continue
 		}
-		if !d.IsDir() && filepath.Ext(path) == ".go" {
-			// Parse the .go file
-			fset := token.NewFileSet()
-			node, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-			if err != nil {
-				return err
+		// Inspect declarations
+		for _, decl := range node.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
 			}
-
-			// Search for the struct with the specified name
-			for _, decl := range node.Decls {
-				if genDecl, ok := decl.(*ast.GenDecl); ok {
-					for _, spec := range genDecl.Specs {
-						if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-							if structType, ok := typeSpec.Type.(*ast.StructType); ok {
-								if typeSpec.Name.Name == *structName {
-									found = true
-									generateParser(typeSpec, structType)
-								}
-							}
-						}
-					}
+			if genDecl.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				if ts.Assign != token.NoPos {
+					// TODO: handle type aliases
+					continue
+				}
+				types[ts.Name.Name] = ts
+				if ts.Name.Name == typeName {
+					fileSpec, typeSpec = node, ts
+					found = true
 				}
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		log.Fatal(err)
 	}
 	if !found {
-		log.Fatalf("Struct with name %s not found", *structName)
+		log.Fatalf("type %v not found", typeName)
+	}
+	return fileSpec, types, typeSpec
+}
+
+func GenerateUnmarshaler(fileSpec *ast.File, types map[string]*ast.TypeSpec, typeSpec *ast.TypeSpec) {
+	g := NewGenerator(fileSpec, types)
+	g.GenerateUnmarshalJSON(typeSpec.Name.Name, typeSpec.Type)
+}
+
+type generator struct {
+	name    string                   // package name
+	imports map[string]bool          // set of imports
+	body    bytes.Buffer             // UnmarshalJSONFrom function body
+	types   map[string]*ast.TypeSpec // map of package types
+	lvl     int                      // indent level
+}
+
+func NewGenerator(fileSpec *ast.File, types map[string]*ast.TypeSpec) *generator {
+	return &generator{
+		name:    fileSpec.Name.Name,
+		imports: make(map[string]bool),
+		types:   types,
 	}
 }
 
-func generateParser(typeSpec *ast.TypeSpec, structType *ast.StructType) {
-	filename := fmt.Sprintf("%s_jsonparse.go", strings.ToLower(typeSpec.Name.Name))
-	fmt.Println("Generating parser for struct", typeSpec.Name.Name)
-	fmt.Println("Generated file:", filename)
+func (g *generator) GenerateUnmarshalJSON(typeName string, typeExpr ast.Expr) {
+	if debug {
+		g.useImports("log")
+	}
+	g.useImports("bytes", "encoding/json/jsontext")
+	g.writeMultiline(fmt.Sprintf(`
+		func (p *%[1]s) UnmarshalJSON(b []byte) error {
+			d := jsontext.NewDecoder(bytes.NewReader(b))
+			return p.UnmarshalJSONFrom(d)
+		}
 
-	f, err := os.Create(filename)
+		func (p *%[1]s) UnmarshalJSONFrom(d *jsontext.Decoder) error {
+			var (
+				t   jsontext.Token
+				err error
+			)
+	`, typeName))
+	g.indent()
+	g.unmarshaler(typeName, typeExpr, "*p", typeName)
+	g.writeLine("return nil")
+	g.unindent()
+	g.writeLine("}")
+	g.flushTo(strings.ToLower(typeName) + "_gen_json.go")
+}
+
+func (g *generator) writeMultiline(s string) {
+	lines := strings.Split(s, "\n")
+	if lines[0] == "" {
+		lines = lines[1:]
+	}
+	if strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	minIndent := math.MaxInt
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		indent := len(line) - len(strings.TrimLeft(line, "\t"))
+		minIndent = min(indent, minIndent)
+	}
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = line[minIndent:]
+		}
+	}
+	for _, line := range lines {
+		g.writeLine(line)
+	}
+}
+
+func (g *generator) writeLine(line string) {
+	ident := strings.Repeat("\t", g.lvl)
+	output := ident + line + "\n"
+	g.body.Write([]byte(output))
+}
+
+func (g *generator) indent() {
+	g.lvl++
+}
+
+func (g *generator) unindent() {
+	g.lvl--
+}
+
+func (g *generator) useImports(imports ...string) {
+	for _, imp := range imports {
+		g.imports[imp] = true
+	}
+}
+
+func (g *generator) flushTo(fileName string) {
+	// Create file
+	f, err := os.OpenFile(fileName, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("create file %s: %v", fileName, err)
 	}
 	defer f.Close()
-
-	// Write the package name
-	fmt.Fprintf(f, "package main\n\n")
-
-	// Write the imports
-	// TODO:
-	// Change to encoding/json/jsontext when proposal is accepted:
-	// - https://github.com/golang/go/issues/71497
-	fmt.Fprintf(f, "import (\n")
-	fmt.Fprintf(f, "\t\"github.com/go-json-experiment/json/jsontext\"")
-	fmt.Fprintf(f, ")\n")
+	// Header
+	fmt.Fprintf(f, "// Code generated by go-gen-json. DO NOT EDIT.\n")
+	fmt.Fprintf(f, "package %s\n\n", g.name)
+	// Imports
+	imports := slices.Collect(maps.Keys(g.imports))
+	if len(imports) == 1 {
+		fmt.Fprintf(f, "import \"%s\"\n\n", imports[0])
+	} else if len(imports) > 1 {
+		slices.Sort(imports)
+		fmt.Fprintf(f, "import (\n")
+		for _, imp := range imports {
+			fmt.Fprintf(f, "\t\"%s\"\n", imp)
+		}
+		fmt.Fprintf(f, ")\n\n")
+	}
+	// Body
+	g.body.WriteTo(f)
 }
 
-var fnTemplate = template.Must(template.New("fn").Parse(`
-func (s *{{.StructName}}) ParseJSON(data []byte) error {
+func (g *generator) unmarshaler(typeName string, typeExpr ast.Expr, varExpr string, originalName string) {
+	if debug {
+		log.Printf("- unmarshaler: %s", typeName)
+		g.writeLine(fmt.Sprintf(`log.Println("- unmarshaler: %s")`, typeName))
+	}
+	switch ts := typeExpr.(type) {
+	case *ast.Ident:
+		g.unmarshalerIdent(ts.Name, varExpr, typeName)
+	case *ast.SelectorExpr:
+		g.unmarshalerSelector(typeName, ts, varExpr)
+	case *ast.StructType:
+		g.unmarshalerStruct(typeName, ts, varExpr)
+	case *ast.ArrayType:
+		g.unmarshalerArray(ts.Elt, varExpr)
+	case *ast.MapType:
+		g.unmarshalerMap(ts.Key, ts.Value, varExpr)
+	case *ast.StarExpr:
+		g.unmarshalerPointer(typeName, ts, varExpr, originalName)
+	default:
+		log.Fatalf("not implemented for type: %T", ts)
+	}
 }
-`))
+
+func (g *generator) unmarshalerIdent(typeName string, varExpr string, targetTypeName string) {
+	if debug {
+		log.Printf("- unmarshaler ident: %s [%s]", typeName, targetTypeName)
+		g.writeLine(fmt.Sprintf(`log.Println("- unmarshaler ident: %s [%s]")`, typeName, targetTypeName))
+	}
+	switch typeName {
+	case "string":
+		g.useImports("errors")
+		g.writeMultiline(fmt.Sprintf(`
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			} 
+			if t.Kind() != '"' {
+				return errors.New("expected string, got " + string(t.Kind()))
+			}
+			%s = %s(t.String())
+		`, varExpr, targetTypeName))
+	case "int", "int32", "int64":
+		g.useImports("errors")
+		g.writeMultiline(fmt.Sprintf(`
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			}
+			if t.Kind() != '0' {
+				return errors.New("expected number, got " + string(t.Kind()))
+			}
+			%s = %s(t.Int())
+		`, varExpr, targetTypeName))
+	case "bool":
+		g.useImports("errors")
+		g.writeMultiline(fmt.Sprintf(`
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			}
+			if t.Kind() != 't' && t.Kind() != 'f' {
+				return errors.New("expected bool, got " + string(t.Kind()))
+			}
+			%s = t.Kind() == 't'`, varExpr))
+	case "float32", "float64":
+		g.useImports("errors")
+		g.writeMultiline(fmt.Sprintf(`
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			}
+			if t.Kind() != '0' {
+				return errors.New("expected number, got " + string(t.Kind()))
+			}
+			%s = %s(t.Float())
+		`, varExpr, targetTypeName))
+	case "any":
+		g.useImports("encoding/json/v2")
+		g.writeMultiline(fmt.Sprintf(`
+			// TODO: optimize this?
+			if v, err := d.ReadValue(); err != nil {
+				return err
+			} else if err := json.Unmarshal(v, &%s); err != nil {
+				return nil
+			}
+		`, varExpr))
+	default:
+		if typeSpec, ok := g.types[typeName]; ok {
+			g.unmarshaler(typeSpec.Name.Name, typeSpec.Type, varExpr, targetTypeName)
+		} else {
+			log.Fatalf("unrecognized type: %s", typeName)
+		}
+	}
+}
+
+func (g *generator) unmarshalerSelector(typeName string, expr *ast.SelectorExpr, varExpr string) {
+	if debug {
+		log.Printf("- unmarshaler selector: %s (%s)", typeName, varExpr)
+		g.writeLine(fmt.Sprintf(`log.Println("- unmarshaler selector: %s (%s)")`, typeName, varExpr))
+	}
+	X, ok := expr.X.(*ast.Ident)
+	if !ok {
+		log.Fatalf("go-gen-json does not support non-Time selector expr")
+	}
+	if X.Name != "time" || expr.Sel.Name != "Time" {
+		log.Fatalf("go-gen-json does not support external packages")
+	}
+	g.useImports("errors")
+	g.writeMultiline(fmt.Sprintf(`
+		t, err = d.ReadToken()
+		if err != nil {
+			return nil
+		}
+		if err = %s.UnmarshalText([]byte(t.String())); err != nil {
+			return err
+		}
+	`, varExpr))
+}
+
+func (g *generator) unmarshalerStruct(typeName string, ts *ast.StructType, varExpr string) {
+	if debug {
+		log.Printf("- unmarshaler struct: %s", typeName)
+		g.writeLine(fmt.Sprintf(`log.Println("- unmarshaler struct: %s")`, typeName))
+	}
+	g.useImports("errors")
+	g.writeMultiline(`
+		t, err = d.ReadToken()
+		if err != nil {
+			return err
+		}
+		if t.Kind() != '{' {
+			return errors.New("expected object start, got " + string(t.Kind()))
+		}
+		for d.PeekKind() != '}' {
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			}
+			if t.Kind() != '"' {
+				return errors.New("expected string, got " + string(t.Kind()))
+			}
+			switch t.String() {
+	`)
+	g.indent()
+	for _, field := range ts.Fields.List {
+		if len(field.Names) == 0 {
+			continue // Skip embedded fields
+		}
+		var jsonTag string
+		if field.Tag != nil {
+			tag, err := strconv.Unquote(field.Tag.Value)
+			if err != nil {
+				log.Fatalf("parse json tag: %v", err)
+			}
+			parts := strings.Split(tag, " ")
+			idx := slices.IndexFunc(parts, func(part string) bool {
+				return strings.HasPrefix(part, "json:")
+			})
+			if idx != -1 {
+				tags, err := strconv.Unquote(strings.TrimPrefix(parts[idx], "json:"))
+				if err != nil {
+					log.Fatalf("parse json tag: %v", err)
+				}
+				jsonTag = strings.Split(tags, ",")[0]
+			}
+		}
+		for _, name := range field.Names {
+			if jsonTag == "" {
+				jsonTag = name.Name
+			}
+			typeString := exprToString(field.Type)
+			g.writeLine(fmt.Sprintf(`case "%s":`, jsonTag))
+			g.indent()
+			g.unmarshaler(typeString, field.Type, fmt.Sprintf("(%s).%s", varExpr, name.Name), typeString)
+			g.unindent()
+		}
+	}
+	g.unindent()
+	g.writeMultiline(`
+			}
+		}
+		_, _ = d.ReadToken()
+	`)
+}
+
+func (g *generator) unmarshalerArray(elemType ast.Expr, varExpr string) {
+	if debug {
+		log.Printf("- unmarshaler array: %s", varExpr)
+		g.writeLine(fmt.Sprintf(`log.Println("- unmarshaler array: %s")`, varExpr))
+	}
+	typeString := exprToString(elemType)
+	g.useImports("errors")
+	g.writeMultiline(fmt.Sprintf(`
+		t, err = d.ReadToken()
+		if err != nil {
+			return err
+		}
+		if t.Kind() != '[' {
+			return errors.New("expected array start, got " + string(t.Kind()))
+		}
+		%s = nil
+		for d.PeekKind() != ']' {
+			var elem %s
+	`, varExpr, typeString))
+	g.indent()
+	g.unmarshaler(typeString, elemType, "elem", typeString)
+	g.unindent()
+	g.writeMultiline(fmt.Sprintf(`
+			%s = append(%s, elem)
+		}
+		_, _ = d.ReadToken()
+	`, varExpr, varExpr))
+}
+
+func (g *generator) unmarshalerMap(keyType ast.Expr, valueType ast.Expr, varExpr string) {
+	if kt, ok := keyType.(*ast.Ident); !ok || kt.Name != "string" {
+		log.Fatalf("JSON does not support non-string map keys")
+	}
+	g.useImports("errors")
+	valueTypeName := exprToString(valueType)
+	g.writeMultiline(fmt.Sprintf(`
+		t, err = d.ReadToken()
+		if err != nil {
+			return err
+		}
+		if t.Kind() != '{' {
+			return errors.New("expected object start, got " + string(t.Kind()))
+		}
+		%s = make(map[string]%s)
+		for d.PeekKind() != '}' {
+			t, err = d.ReadToken()
+			if err != nil {
+				return err
+			}
+			if t.Kind() != '"' {
+				return errors.New("expected string, got " + string(t.Kind()))
+			}
+			key := t.String()
+			var value %[2]s
+	`, varExpr, valueTypeName))
+	g.indent()
+	g.unmarshaler(valueTypeName, valueType, "value", valueTypeName)
+	g.unindent()
+	g.writeMultiline(fmt.Sprintf(`
+			%s[key] = value
+		}
+		_, _ = d.ReadToken()
+	`, varExpr))
+}
+
+func (g *generator) unmarshalerPointer(typeName string, ts *ast.StarExpr, varExpr string, originalName string) {
+	if debug {
+		log.Printf("- unmarshaler pointer: %s (%s)", typeName, varExpr)
+		g.writeLine(fmt.Sprintf(`log.Println("- unmarshaler pointer: %s (%s)")`, typeName, varExpr))
+	}
+	// Don't read anything: just initialize varExpr pointer, then call unmarshaler on the underlying type
+	g.useImports("errors")
+	g.writeMultiline(fmt.Sprintf(`
+		%s = new(%s)
+	`, varExpr, exprToString(ts.X)))
+	g.unmarshaler(originalName, ts.X, fmt.Sprintf("(*%s)", varExpr), originalName)
+}
+
+// Hacky way to get type string
+func exprToString(expr ast.Expr) string {
+	buf := bytes.Buffer{}
+	printer.Fprint(&buf, token.NewFileSet(), expr)
+	return buf.String()
+}
