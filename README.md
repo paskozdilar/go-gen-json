@@ -1,19 +1,36 @@
 # go-gen-json
 
-Generator for struct-specific JSON parsers / serializers in Go.
+Generator for custom-tailored JSON parsers and serializers for Go structs.
 
-**THIS PACKAGE IS IN DEVELOPMENT AND NOT EVEN CLOSE TO READY TO USE**
+**DISCLAIMER:** This package is still in development and not production-ready.
+
+Currently only supports a small subset of Go types and does not handle
+all edge cases.
+
+Pending issues:
+- [ ] Implement MarshalJSON
+- [ ] Re-use existing `MarshalJSON` and `UnmarshalJSON` methods
+- [ ] Parse recursive types
+- [ ] Handle JSON struct tags
+- [ ] Handle JSON options (omitempty, etc.)
+- [ ] Handle unexported fields
+- [ ] Handle external types (just call "json.Marshal" and "json.Unmarshal"?)
 
 ## Introduction
 
 One of the slowest parts of Go `json.Marshal` and `json.Unmarshal` functions
-is the reflection part. This package aims to generate code that will be
-specific to the struct you want to serialize / deserialize.
+is the reflection part. Fortunately, `json/v2` has also introduced `jsontext`
+package which is a low-level JSON parser and serializer that does not use
+reflection.
 
-The plan is to use `//go:generate` directive to generate the code for the
-structs you want to serialize / deserialize, similar to `stringer`.
+This package aims to generate custom-tailored code for marshaling and
+unmarshaling Go structs to and from JSON using `jsontext` package.
+This is now done using a custom `//go:generate` directive, similar to
+`stringer` and `mockgen`.
 
-E.g.:
+## Example
+
+Given the following Go code:
 
 ```go
 //go:generate go-gen-json -type=MyStruct
@@ -23,32 +40,15 @@ type MyStruct struct {
 }
 ```
 
-With the above directive, running `go generate` in the same directory as the
-above file will generate a file `mystruct_json.go` with the following content:
+Runnin `go generate` will generate a `mystruct_gen_json.go` file with the
+following functions:
 
 ```go
-package mypackage
-
-func (s *MyStruct) MarshalJSON() ([]byte, error) {
-    // ...
-}
-
-func (s *MyStruct) UnmarshalJSON(data []byte) error {
-    // ...
-}
+func (s *MyStruct) MarshalJSON() ([]byte, error)
+func (s *MyStruct) MarshalJSONTo(*jsontext.Writer)
+func (s *MyStruct) UnmarshalJSON([]byte) error
+func (s *MyStruct) UnmarshalJSONFrom(*jsontext.Reader) error
 ```
 
-These will be entirely compatible with the `json.Marshal` and `json.Unmarshal`
-functions, but will be much faster.
-
-## Progress
-
-- [x] Write a few examples manually to better understand the problem
-- [x] Write benchmarks to prove the speedup of manually written code
-- [ ] Write a parser for the struct definition
-- [ ] Write a generator for the struct-specific code
-    - [ ] MarshalJSON
-    - [ ] UnmarshalJSON
-- [ ] Write required utility functions in subpackage
-    - [ ] Create subpackage "jsonutil"
-    - [x] Write Discard function
+These will be compatible with the `json.Marshal` and `json.Unmarshal`
+functions, so they can be used as drop-in replacements.
